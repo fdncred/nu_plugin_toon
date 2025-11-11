@@ -38,6 +38,7 @@ impl SimplePluginCommand for ToToon {
                 "Set maximum depth for key folding",
                 Some('f'),
             )
+            .switch("raw", "Don't call internal `to json` command and just pass json as the input", Some('r'))
             .category(Category::Experimental)
     }
 
@@ -93,7 +94,7 @@ impl SimplePluginCommand for ToToon {
         } else {
             Delimiter::Comma
         };
-
+        let raw = call.has_flag("raw")?;
         let space_count = call.get_flag::<i64>("indent-spaces")?.unwrap_or(2) as usize;
         let folding_mode = if let Some(folding) = call.get_flag::<String>("key-folding-mode")? {
             match folding.to_ascii_lowercase().as_str() {
@@ -119,33 +120,41 @@ impl SimplePluginCommand for ToToon {
             .get_flag::<usize>("folding-depth")?
             .unwrap_or(usize::MAX);
 
-        // Get the 'to json' declaration
-        let Some(decl_id) = engine.find_decl("to json")? else {
-            return Err(LabeledError::new(
-                "Could not find 'to json' declaration".to_string(),
-            ));
+        let json_data = if raw {
+            input
+                .as_str()
+                .or_else(|_| {
+                    Err(LabeledError::new("Invalid Input".to_string()).with_label(
+                        "Expected a string input when using the --raw flag".to_string(),
+                        call.head,
+                    ))
+                })?
+                .to_string()
+        } else {
+            // Get the 'to json' declaration
+            let Some(decl_id) = engine.find_decl("to json")? else {
+                return Err(LabeledError::new(
+                    "Could not find 'to json' declaration".to_string(),
+                ));
+            };
+
+            // Call 'to json' on the input value
+            let to_json = engine.call_decl(
+                decl_id,
+                EvaluatedCall::new(call.head),
+                PipelineData::Value(input.clone(), None),
+                true,
+                false,
+            )?;
+
+            let json_value = to_json.into_value(call.head)?;
+            json_value.as_str()?.to_string()
         };
 
-        // Call 'to json' on the input value
-        let to_json = engine.call_decl(
-            decl_id,
-            EvaluatedCall::new(call.head),
-            PipelineData::Value(input.clone(), None),
-            true,
-            false,
-        )?;
-
-        let json_value = to_json.into_value(call.head)?;
-        let json_str = json_value.as_str()?;
-
-        // let str_input = input.as_str()?;
-        // eprintln!("  Input Data: {json_str_input}\n");
-
-        let json_value = serde_json::from_str::<serde_json::Value>(json_str).map_err(|e| {
+        let json_value = serde_json::from_str::<serde_json::Value>(&json_data).map_err(|e| {
             LabeledError::new("JSON Parsing Error".to_string())
                 .with_label(format!("Failed to parse input as JSON: {}", e), call.head)
         })?;
-        // let data = json!({ "users": [ { "id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]});
 
         let toon_encode_options = EncodeOptions::new()
             .with_delimiter(delimiter)
@@ -155,7 +164,10 @@ impl SimplePluginCommand for ToToon {
 
         let toon = encode(&json_value, &toon_encode_options).map_err(|e| {
             LabeledError::new("Toon Encoding Error".to_string()).with_label(
-                format!("Failed to encode data '{}' to toon format: {}", json_str, e),
+                format!(
+                    "Failed to encode data '{}' to toon format: {}",
+                    json_data, e
+                ),
                 call.head,
             )
         })?;

@@ -26,6 +26,7 @@ Flags:
   -i, --indent-spaces <int>: The number of spaces to indent (default is 2)
   -k, --key-folding-mode <string>: Keyfolding mode, 'off' or 'safe'. When set to 'Safe', single-key object chains will be folded into dotted-path notation if all safety requirements are met
   -f, --folding-depth <int>: Set maximum depth for key folding
+  -r, --raw: Don't call internal to json command and just pass json as the input
 
 Examples:
   Convert ls output to toon format
@@ -40,7 +41,7 @@ Examples:
 
 ### from toon
 ```nushell
-from toon --help                                                                                                                                                        13  12:41:11 PM
+from toon --help
 Convert toon formatted text to nushell values
 
 'Under the hood' from toon calls the from json command after decoding the toon formatted input into JSON. Parsing the toon format is set to strict. Make sure the toon output has 2 spaces, is delimited by commas, and uses \n as a line separator and not \r\n even on Windows
