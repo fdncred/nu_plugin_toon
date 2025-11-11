@@ -1854,9 +1854,9 @@ dependencies = [
 
 [[package]]
 name = "tiktoken-rs"
-version = "0.7.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25563eeba904d770acf527e8b370fe9a5547bacd20ff84a0b6c3bc41288e5625"
+checksum = "3a19830747d9034cd9da43a60eaa8e552dfda7712424aebf187b7a60126bae0d"
 dependencies = [
  "anyhow",
  "base64",
@@ -1902,9 +1902,9 @@ dependencies = [
 
 [[package]]
 name = "toon-format"
-version = "0.2.3"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8cd0cd4a0dfb8b5ce2ad7c5b39ee9d994f40523ab65c5272996ca8dc456e7d4"
+checksum = "3e99929d7bafb1bbe47e4246e31a1800ed5b22d81c4351089fafe544f478e781"
 dependencies = [
  "anyhow",
  "clap",

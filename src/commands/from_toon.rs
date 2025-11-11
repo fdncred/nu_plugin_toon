@@ -1,7 +1,9 @@
 use crate::ToonPlugin;
 use nu_plugin::{EngineInterface, EvaluatedCall, SimplePluginCommand};
-use nu_protocol::{record, Category, Example, LabeledError, PipelineData, Signature, Value};
-use toon_format::{decode, DecodeOptions, Delimiter, Indent};
+use nu_protocol::{
+    record, Category, Example, LabeledError, PipelineData, Signature, SyntaxShape, Value,
+};
+use toon_format::{decode, types::PathExpansionMode, DecodeOptions, Delimiter, Indent};
 
 pub struct FromToon;
 
@@ -13,7 +15,27 @@ impl SimplePluginCommand for FromToon {
     }
 
     fn signature(&self) -> Signature {
-        Signature::build(self.name()).category(Category::Experimental)
+        Signature::build(self.name())
+            .named(
+                "delimiter",
+                SyntaxShape::String,
+                "Delimiter to use: ',', '|', or \"\\t\" (default is ',')",
+                Some('d'),
+            )
+            .named("expand-paths",
+                SyntaxShape::String,
+                "Enable path expansion 'off' or 'safe' (defaults to 'off'). When set to 'Safe', dotted keys will be expanded into nested objects if all segments are IdentifierSegments",
+                Some('e'),
+            )
+            .switch("strict", "Enable or disable strict mode (validates array lengths, indentation, etc) (default: true)", Some('s'))
+            .named(
+                "indent-spaces",
+                SyntaxShape::Int,
+                "The number of spaces to indent (default is 2)",
+                Some('i'),
+            )
+            .switch("coerce-types", "Enable or disable type coercion (strings like “123” -> numbers) (default: true)", Some('c'))
+            .category(Category::Experimental)
     }
 
     fn description(&self) -> &str {
@@ -58,6 +80,45 @@ impl SimplePluginCommand for FromToon {
         call: &EvaluatedCall,
         input: &Value,
     ) -> Result<Value, LabeledError> {
+        let delimiter = if let Some(del) = call.get_flag::<String>("delimiter")? {
+            match del.as_str() {
+                "," => Delimiter::Comma,
+                "|" => Delimiter::Pipe,
+                "\t" => Delimiter::Tab,
+                other => {
+                    return Err(
+                        LabeledError::new("Invalid Delimiter".to_string()).with_label(
+                            format!(
+                                "Delimiter '{}' is not valid. Use one of: ',', '|', or '\\t'",
+                                other
+                            ),
+                            call.head,
+                        ),
+                    );
+                }
+            }
+        } else {
+            Delimiter::Comma
+        };
+
+        let space_count = call.get_flag::<i64>("indent-spaces")?.unwrap_or(2) as usize;
+        let path_expansion_mode = match call.get_flag::<String>("expand-paths")?.as_deref() {
+            Some("off") | None => PathExpansionMode::Off,
+            Some("safe") => PathExpansionMode::Safe,
+            Some(other) => {
+                return Err(LabeledError::new("Invalid Path Expansion Mode".to_string())
+                    .with_label(
+                        format!(
+                            "Path expansion mode '{}' is not valid. Use one of: 'off', 'safe'",
+                            other
+                        ),
+                        call.head,
+                    ));
+            }
+        };
+        let strict_mode = call.has_flag("strict").unwrap_or(true);
+        let coerce_types = call.has_flag("coerce-types").unwrap_or(true);
+
         let input_str = input
             .as_str()
             .map_err(|e| {
@@ -69,10 +130,11 @@ impl SimplePluginCommand for FromToon {
             .replace("\r\n", "\n");
 
         let toon_decode_options = DecodeOptions::new()
-            .with_delimiter(Delimiter::Comma)
-            .with_strict(true)
-            .with_coerce_types(true)
-            .with_indent(Indent::Spaces(2));
+            .with_delimiter(delimiter)
+            .with_strict(strict_mode)
+            .with_coerce_types(coerce_types)
+            .with_indent(Indent::Spaces(space_count))
+            .with_expand_paths(path_expansion_mode);
 
         let decoded_value = decode(&input_str, &toon_decode_options).map_err(|e| {
             LabeledError::new("Toon Decoding Error".to_string()).with_label(

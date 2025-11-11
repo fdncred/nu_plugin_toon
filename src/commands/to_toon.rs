@@ -1,7 +1,7 @@
 use crate::ToonPlugin;
 use nu_plugin::{EngineInterface, EvaluatedCall, SimplePluginCommand};
-use nu_protocol::{Category, Example, LabeledError, PipelineData, Signature, Value};
-use toon_format::{encode, Delimiter, EncodeOptions, Indent};
+use nu_protocol::{Category, Example, LabeledError, PipelineData, Signature, SyntaxShape, Value};
+use toon_format::{encode, types::KeyFoldingMode, Delimiter, EncodeOptions, Indent};
 
 pub struct ToToon;
 
@@ -13,7 +13,32 @@ impl SimplePluginCommand for ToToon {
     }
 
     fn signature(&self) -> Signature {
-        Signature::build(self.name()).category(Category::Experimental)
+        Signature::build(self.name())
+            .named(
+                "delimiter",
+                SyntaxShape::String,
+                "Delimiter to use: ',', '|', or \"\\t\" (default is ',')",
+                Some('d'),
+            )
+            .named(
+                "indent-spaces",
+                SyntaxShape::Int,
+                "The number of spaces to indent (default is 2)",
+                Some('i'),
+            )
+            .named(
+                "key-folding-mode",
+                SyntaxShape::String,
+                "Keyfolding mode, 'off' or 'safe'. When set to 'Safe', single-key object chains will be folded into dotted-path notation if all safety requirements are met",
+                Some('k'),
+            )
+            .named(
+                "folding-depth",
+                SyntaxShape::Int,
+                "Set maximum depth for key folding",
+                Some('f'),
+            )
+            .category(Category::Experimental)
     }
 
     fn description(&self) -> &str {
@@ -48,6 +73,52 @@ impl SimplePluginCommand for ToToon {
         call: &EvaluatedCall,
         input: &Value,
     ) -> Result<Value, LabeledError> {
+        let delimiter = if let Some(del) = call.get_flag::<String>("delimiter")? {
+            match del.as_str() {
+                "," => Delimiter::Comma,
+                "|" => Delimiter::Pipe,
+                "\t" => Delimiter::Tab,
+                other => {
+                    return Err(
+                        LabeledError::new("Invalid Delimiter".to_string()).with_label(
+                            format!(
+                                "Delimiter '{}' is not valid. Use one of: ',', '|', or '\\t'",
+                                other
+                            ),
+                            call.head,
+                        ),
+                    );
+                }
+            }
+        } else {
+            Delimiter::Comma
+        };
+
+        let space_count = call.get_flag::<i64>("indent-spaces")?.unwrap_or(2) as usize;
+        let folding_mode = if let Some(folding) = call.get_flag::<String>("key-folding-mode")? {
+            match folding.to_ascii_lowercase().as_str() {
+                "off" => KeyFoldingMode::Off,
+                "safe" => KeyFoldingMode::Safe,
+                other => {
+                    return Err(
+                        LabeledError::new("Invalid Folding Mode".to_string()).with_label(
+                            format!(
+                                "Folding mode '{}' is not valid. Use one of: 'off' or 'safe'",
+                                other
+                            ),
+                            call.head,
+                        ),
+                    );
+                }
+            }
+        } else {
+            KeyFoldingMode::Off
+        };
+
+        let folding_depth = call
+            .get_flag::<usize>("folding-depth")?
+            .unwrap_or(usize::MAX);
+
         // Get the 'to json' declaration
         let Some(decl_id) = engine.find_decl("to json")? else {
             return Err(LabeledError::new(
@@ -77,10 +148,10 @@ impl SimplePluginCommand for ToToon {
         // let data = json!({ "users": [ { "id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]});
 
         let toon_encode_options = EncodeOptions::new()
-            .with_delimiter(Delimiter::Comma)
-            .with_indent(Indent::Spaces(2))
-            // .with_length_marker('#')
-            .with_spaces(2);
+            .with_delimiter(delimiter)
+            .with_indent(Indent::Spaces(space_count))
+            .with_key_folding(folding_mode)
+            .with_flatten_depth(folding_depth);
 
         let toon = encode(&json_value, &toon_encode_options).map_err(|e| {
             LabeledError::new("Toon Encoding Error".to_string()).with_label(
