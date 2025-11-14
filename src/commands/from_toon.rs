@@ -136,15 +136,16 @@ impl SimplePluginCommand for FromToon {
             .with_indent(Indent::Spaces(space_count))
             .with_expand_paths(path_expansion_mode);
 
-        let decoded_value = decode(&input_str, &toon_decode_options).map_err(|e| {
-            LabeledError::new("Toon Decoding Error".to_string()).with_label(
-                format!(
-                    "Failed to decode input '{}' from toon format: {}",
-                    input_str, e
-                ),
-                call.head,
-            )
-        })?;
+        let decoded_value: serde_json::Value =
+            decode(&input_str, &toon_decode_options).map_err(|e| {
+                LabeledError::new("Toon Decoding Error".to_string()).with_label(
+                    format!(
+                        "Failed to decode input '{}' from toon format: {}",
+                        input_str, e
+                    ),
+                    call.head,
+                )
+            })?;
 
         let decoded_value_str = serde_json::to_string(&decoded_value).map_err(|e| {
             LabeledError::new("Serialization Error".to_string()).with_label(

@@ -123,11 +123,11 @@ impl SimplePluginCommand for ToToon {
         let json_data = if raw {
             input
                 .as_str()
-                .or_else(|_| {
-                    Err(LabeledError::new("Invalid Input".to_string()).with_label(
+                .map_err(|_| {
+                    LabeledError::new("Invalid Input".to_string()).with_label(
                         "Expected a string input when using the --raw flag".to_string(),
                         call.head,
-                    ))
+                    )
                 })?
                 .to_string()
         } else {
