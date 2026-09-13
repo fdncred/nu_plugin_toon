@@ -39,6 +39,11 @@ impl SimplePluginCommand for ToToon {
                 Some('f'),
             )
             .switch("raw", "Don't call internal `to json` command and just pass json as the input", Some('r'))
+            .switch(
+                "pretty",
+                "Format output with aligned table columns",
+                Some('p'),
+            )
             .category(Category::Experimental)
     }
 
@@ -61,7 +66,14 @@ impl SimplePluginCommand for ToToon {
                 description: "Convert table literal to toon format",
                 example: "[[col1 col2 col3]; [moe larry curly] [larry curly moe]] | to toon",
                 result: Some(Value::test_string(
-                    "[2]{col1,col2,col3}:\n  moe,larry,curly\n  larry,curly,moe\n",
+                    "[2]{col1,col2,col3}:\n  moe,larry,curly\n  larry,curly,moe",
+                )),
+            },
+            Example {
+                description: "Convert table literal to toon format with aligned columns",
+                example: "[[col1 col2 col3]; [moe larry curly] [larry curly moe]] | to toon --pretty",
+                result: Some(Value::test_string(
+                    "[2]{col1,col2 ,col3}:\n  moe   ,larry,curly\n  larry ,curly,moe",
                 )),
             },
         ]
@@ -95,6 +107,7 @@ impl SimplePluginCommand for ToToon {
             Delimiter::Comma
         };
         let raw = call.has_flag("raw")?;
+        let pretty = call.has_flag("pretty")?;
         let space_count = call.get_flag::<i64>("indent-spaces")?.unwrap_or(2) as usize;
         let folding_mode = if let Some(folding) = call.get_flag::<String>("key-folding-mode")? {
             match folding.to_ascii_lowercase().as_str() {
@@ -172,7 +185,19 @@ impl SimplePluginCommand for ToToon {
             )
         })?;
 
-        Ok(Value::string(toon, call.head))
+        if pretty {
+            let delimiter_char = match delimiter {
+                Delimiter::Comma => ',',
+                Delimiter::Pipe => '|',
+                Delimiter::Tab => '\t',
+            };
+            Ok(Value::string(
+                crate::pretty::align_toon(&toon, delimiter_char, space_count),
+                call.head,
+            ))
+        } else {
+            Ok(Value::string(toon, call.head))
+        }
     }
 }
 
@@ -186,5 +211,10 @@ fn test_examples() -> Result<(), nu_protocol::ShellError> {
     // We recommend you add this test to any other commands you create, or remove it if the examples
     // can't be tested this way.
 
-    PluginTest::new("toon", ToonPlugin.into())?.test_command_examples(&ToToon)
+    // `to toon` shells out to the host `to json`, which PluginTest's minimal
+    // engine lacks -- register the real decls so the examples truly execute.
+    PluginTest::new("toon", ToonPlugin.into())?
+        .add_decl(Box::new(nu_command::ToJson))?
+        .add_decl(Box::new(nu_command::FromJson))?
+        .test_command_examples(&ToToon)
 }

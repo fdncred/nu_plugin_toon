@@ -183,5 +183,10 @@ fn test_examples() -> Result<(), nu_protocol::ShellError> {
     // We recommend you add this test to any other commands you create, or remove it if the examples
     // can't be tested this way.
 
-    PluginTest::new("toon", ToonPlugin.into())?.test_command_examples(&FromToon)
+    // `from toon` shells out to the host `from json`, which PluginTest's minimal
+    // engine lacks -- register the real decls so the examples truly execute.
+    PluginTest::new("toon", ToonPlugin.into())?
+        .add_decl(Box::new(nu_command::ToJson))?
+        .add_decl(Box::new(nu_command::FromJson))?
+        .test_command_examples(&FromToon)
 }

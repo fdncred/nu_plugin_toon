@@ -1,6 +1,7 @@
 use nu_plugin::{serve_plugin, MsgPackSerializer, Plugin, PluginCommand};
 
 mod commands;
+mod pretty;
 pub use commands::*;
 
 pub struct ToonPlugin;
