@@ -174,9 +174,7 @@ impl SimplePluginCommand for FromToon {
 }
 
 #[test]
-#[ignore = "PluginTest's minimal engine lacks `from json`, which `from toon` shells out to; \
-    wiring nu-command in would bloat Cargo.lock by ~5k lines. (Pre-existing: this \
-    harness fails the same way on main.)"]
+#[ignore = "PluginTest lacks `from json` (needs nu-command); fails the same on main."]
 fn test_examples() -> Result<(), nu_protocol::ShellError> {
     use nu_plugin_test_support::PluginTest;
 

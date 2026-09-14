@@ -39,11 +39,7 @@ impl SimplePluginCommand for ToToon {
                 Some('f'),
             )
             .switch("raw", "Don't call internal `to json` command and just pass json as the input", Some('r'))
-            .switch(
-                "pretty",
-                "Format output with aligned table columns",
-                Some('p'),
-            )
+            .switch("pretty", "Format output with aligned table columns", Some('p'))
             .category(Category::Experimental)
     }
 
@@ -186,26 +182,24 @@ impl SimplePluginCommand for ToToon {
             )
         })?;
 
-        if pretty {
-            let delimiter_char = match delimiter {
-                Delimiter::Comma => ',',
-                Delimiter::Pipe => '|',
-                Delimiter::Tab => '\t',
-            };
-            Ok(Value::string(
-                crate::pretty::align_toon(&toon, delimiter_char, space_count),
-                call.head,
-            ))
-        } else {
-            Ok(Value::string(toon, call.head))
-        }
+        Ok(Value::string(
+            if pretty {
+                let sep = match delimiter {
+                    Delimiter::Comma => ',',
+                    Delimiter::Pipe => '|',
+                    Delimiter::Tab => '\t',
+                };
+                crate::pretty::align_toon(&toon, sep, space_count)
+            } else {
+                toon
+            },
+            call.head,
+        ))
     }
 }
 
 #[test]
-#[ignore = "PluginTest's minimal engine lacks `to json`, which `to toon` shells out to; \
-    wiring nu-command in would bloat Cargo.lock by ~5k lines. The --pretty output \
-    string is covered by the align_toon unit tests in src/pretty.rs."]
+#[ignore = "PluginTest lacks `to json` (needs nu-command); pretty output covered by align_toon tests."]
 fn test_examples() -> Result<(), nu_protocol::ShellError> {
     use nu_plugin_test_support::PluginTest;
 
