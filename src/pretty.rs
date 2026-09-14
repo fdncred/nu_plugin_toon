@@ -78,23 +78,51 @@ fn parse_tbl_header(line: &str, delim: char) -> Option<Tbl> {
     if t.starts_with("- ") || t == "-" || !line.trim_end_matches(' ').ends_with(':') {
         return None;
     }
-    let lb = find_unquoted(line, '[', 0)?;
-    let rb = find_unquoted(line, ']', lb)?;
+    let toks = tokens(line);
+    let at = |ch: char, from: usize| {
+        toks.iter()
+            .find(|(i, c)| *c == ch && *i >= from)
+            .map(|(i, _)| *i)
+    };
+    let lb = at('[', 0)?;
+    let rb = at(']', lb)?;
     let inner = &line[lb + 1..rb];
     let digits: String = inner.chars().take_while(|c| c.is_ascii_digit()).collect();
     let len: usize = digits.parse().ok()?;
     let keyed = inner.contains(':');
-    let open = find_unquoted(line, '{', rb)?;
-    let close = match_brace(line, open)?;
+    let open = at('{', rb)?;
+    // matching close: depth walk over the brace tokens
+    let mut depth = 0;
+    let mut close = None;
+    for (i, c) in &toks {
+        if *i < open {
+            continue;
+        }
+        if *c == '{' {
+            depth += 1;
+        } else if *c == '}' {
+            depth -= 1;
+            if depth == 0 {
+                close = Some(*i);
+                break;
+            }
+        }
+    }
+    let close = close?;
     if line[close + 1..].trim() != ":" {
         return None;
     }
     // flat split of the field area: group syntax stays inside segments, so
     // each segment holds exactly one leaf plus surrounding syntax/pads.
-    let segs = split_cells(&line[open + 1..close], delim)
-        .into_iter()
-        .map(|(a, b)| (open + 1 + a, open + 1 + b))
-        .collect::<Vec<_>>();
+    let mut segs = vec![];
+    let mut s = open + 1;
+    for (i, c) in &toks {
+        if *c == delim && *i > open && *i < close {
+            segs.push((s, *i));
+            s = *i + delim.len_utf8();
+        }
+    }
+    segs.push((s, close));
     if segs.len() < 2 {
         return None; // single column: nothing to align
     }
@@ -115,70 +143,17 @@ fn strip_tail(mut s: &str) -> &str {
     }
 }
 
-// Byte offset (relative to seg) where the leaf NAME starts: skip lead pads,
-// then skip group prefixes (`at{`, `"my group"{`, arbitrarily nested).
+// Byte offset (relative to seg) where the leaf NAME starts: after the last
+// group opener (`at{`, `"my group"{`, arbitrarily nested), else after lead
+// pads. Quote-safe: only UNQUOTED openers count, so `"a{b"` starts at 0.
 fn name_start(seg: &str) -> usize {
-    let b = seg.as_bytes();
-    let mut i = 0;
-    loop {
-        while i < b.len() && b[i] == b' ' {
-            i += 1;
-        }
-        let start = i;
-        if i < b.len() && b[i] == b'"' {
-            i = quoted_end(seg, i);
-            if i < b.len() && b[i] == b'{' {
-                i += 1;
-                continue; // quoted group name, keep going
-            }
-            return start; // quoted leaf name
-        }
-        match bare_brace(seg, i) {
-            Some(pos) => {
-                i = pos + 1;
-            }
-            None => return start, // bare leaf name
-        }
-    }
-}
-
-// Byte idx just past the closing quote (or seg.len() if unterminated).
-fn quoted_end(seg: &str, open: usize) -> usize {
-    let mut esc = false;
-    for (rel, c) in seg[open + 1..].char_indices() {
-        let idx = open + 1 + rel;
-        if esc {
-            esc = false;
-        } else if c == '\\' {
-            esc = true;
-        } else if c == '"' {
-            return idx + 1;
-        }
-    }
-    seg.len()
-}
-
-// First unquoted `{` at or after `from` (group opener, not quoted data).
-fn bare_brace(seg: &str, from: usize) -> Option<usize> {
-    let mut in_q = false;
-    let mut esc = false;
-    for (rel, c) in seg[from..].char_indices() {
-        let idx = from + rel;
-        if esc {
-            esc = false;
-        } else if in_q {
-            if c == '\\' {
-                esc = true;
-            } else if c == '"' {
-                in_q = false;
-            }
-        } else if c == '"' {
-            in_q = true;
-        } else if c == '{' {
-            return Some(idx);
-        }
-    }
-    None
+    let lead = seg.bytes().take_while(|b| *b == b' ').count();
+    tokens(seg)
+        .iter()
+        .filter(|(_, c)| *c == '{')
+        .last()
+        .map(|(i, _)| i + 1)
+        .unwrap_or(lead)
 }
 
 fn align_one(
@@ -312,37 +287,21 @@ fn build(
 }
 
 fn find_unquoted(s: &str, target: char, from: usize) -> Option<usize> {
-    let mut in_q = false;
-    let mut esc = false;
-    for (idx, c) in s.char_indices() {
-        if idx < from {
-            continue;
-        }
-        if esc {
-            esc = false;
-        } else if in_q {
-            if c == '\\' {
-                esc = true;
-            } else if c == '"' {
-                in_q = false;
-            }
-        } else if c == '"' {
-            in_q = true;
-        } else if c == target {
-            return Some(idx);
-        }
-    }
-    None
+    tokens(s)
+        .into_iter()
+        .find(|(i, c)| *c == target && *i >= from)
+        .map(|(i, _)| i)
 }
 
-fn match_brace(s: &str, open: usize) -> Option<usize> {
-    let mut depth = 0;
+// The one quote-tracking scanner everything else builds on: every
+// structurally significant char outside `"..."` (backslash escapes honored),
+// as (byte idx, char). Covers all three delimiters (`,`, `|`, tab) so no
+// caller needs its own quote state machine.
+fn tokens(s: &str) -> Vec<(usize, char)> {
+    let mut out = vec![];
     let mut in_q = false;
     let mut esc = false;
     for (idx, c) in s.char_indices() {
-        if idx < open {
-            continue;
-        }
         if esc {
             esc = false;
         } else if in_q {
@@ -353,38 +312,19 @@ fn match_brace(s: &str, open: usize) -> Option<usize> {
             }
         } else if c == '"' {
             in_q = true;
-        } else if c == '{' {
-            depth += 1;
-        } else if c == '}' {
-            depth -= 1;
-            if depth == 0 {
-                return Some(idx);
-            }
+        } else if matches!(c, '[' | ']' | '{' | '}' | ':' | ',' | '|' | '\t') {
+            out.push((idx, c));
         }
     }
-    None
+    out
 }
 
 fn split_cells(s: &str, delim: char) -> Vec<(usize, usize)> {
     let mut out = vec![];
     let mut start = 0;
-    let mut in_q = false;
-    let mut esc = false;
-    for (idx, c) in s.char_indices() {
-        if esc {
-            esc = false;
-        } else if in_q {
-            if c == '\\' {
-                esc = true;
-            } else if c == '"' {
-                in_q = false;
-            }
-        } else if c == '"' {
-            in_q = true;
-        } else if c == delim {
-            out.push((start, idx));
-            start = idx + c.len_utf8();
-        }
+    for (i, _) in tokens(s).into_iter().filter(|(_, c)| *c == delim) {
+        out.push((start, i));
+        start = i + delim.len_utf8();
     }
     out.push((start, s.len()));
     out
@@ -392,6 +332,21 @@ fn split_cells(s: &str, delim: char) -> Vec<(usize, usize)> {
 
 #[cfg(test)]
 mod pretty_tests {
+    #[test]
+    fn leaf_spans() {
+        use super::{name_start, strip_tail};
+        assert_eq!(name_start("customer{name"), 9);
+        assert_eq!(name_start("at{x"), 3);
+        assert_eq!(name_start("user"), 0);
+        assert_eq!(name_start(" user"), 1);
+        assert_eq!(name_start("\"x,y\""), 0);
+        assert_eq!(name_start("\"a{b\""), 0);
+        assert_eq!(name_start("\"g\"{x"), 4);
+        assert_eq!(strip_tail("country                   }"), "country");
+        assert_eq!(strip_tail("name                    "), "name");
+        assert_eq!(strip_tail("\"a}\"   "), "\"a}\"");
+    }
+
     use super::align_toon;
     use toon_format::{decode, DecodeOptions};
 
