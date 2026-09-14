@@ -71,7 +71,8 @@ impl SimplePluginCommand for ToToon {
             },
             Example {
                 description: "Convert table literal to toon format with aligned columns",
-                example: "[[col1 col2 col3]; [moe larry curly] [larry curly moe]] | to toon --pretty",
+                example:
+                    "[[col1 col2 col3]; [moe larry curly] [larry curly moe]] | to toon --pretty",
                 result: Some(Value::test_string(
                     "[2]{col1,col2 ,col3}:\n  moe   ,larry,curly\n  larry ,curly,moe",
                 )),
