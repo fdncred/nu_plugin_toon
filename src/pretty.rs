@@ -19,24 +19,10 @@ pub fn align_toon(toon: &str, delimiter: char, indent_spaces: usize) -> String {
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     let mut i = 0;
     while i < lines.len() {
-        if let Some(tbl) = parse_tbl_header(lines[i], delimiter) {
-            let row_indent = indent_len(lines[i]) + indent_spaces;
-            if tbl.len > 0
-                && i + 1 + tbl.len <= lines.len()
-                && rows_look_tabular(&lines[i + 1..i + 1 + tbl.len], row_indent)
-            {
-                if let Some(aligned) = align_one(
-                    lines[i],
-                    &lines[i + 1..i + 1 + tbl.len],
-                    &tbl,
-                    delimiter,
-                    row_indent,
-                ) {
-                    out.extend(aligned);
-                    i += 1 + tbl.len;
-                    continue;
-                }
-            }
+        if let Some((block, end)) = table_block(&lines, i, delimiter, indent_spaces) {
+            out.extend(block);
+            i = end;
+            continue;
         }
         out.push(lines[i].to_string());
         i += 1;
@@ -48,11 +34,40 @@ pub fn align_toon(toon: &str, delimiter: char, indent_spaces: usize) -> String {
     s
 }
 
+// Whole table under lines[i]: parsed header plus aligned rows, and the
+// index just past them. None when line i holds no table.
+fn table_block(
+    lines: &[&str],
+    i: usize,
+    delim: char,
+    indent_spaces: usize,
+) -> Option<(Vec<String>, usize)> {
+    let tbl = parse_tbl_header(lines[i], delim)?;
+    let row_indent = indent_len(lines[i]) + indent_spaces;
+    let end = i + 1 + tbl.len;
+    if tbl.len > 0 && end <= lines.len() && rows_look_tabular(&lines[i + 1..end], row_indent) {
+        align_one(lines[i], &lines[i + 1..end], &tbl, delim, row_indent).map(|a| (a, end))
+    } else {
+        None
+    }
+}
+
 struct Tbl {
     len: usize,
     keyed: bool,
-    open: usize, // byte idx of outer '{'
+    open: usize,               // byte idx of outer '{'
     segs: Vec<(usize, usize)>, // flat field segments (absolute byte ranges)
+}
+
+// One table, fully measured: rows plus their column geometry.
+struct Fit {
+    grid: Vec<Vec<String>>,
+    keys: Vec<String>,
+    max_key: usize,
+    widths: Vec<usize>,
+    pads: Vec<usize>,
+    lead: usize,
+    ends: Vec<usize>, // header byte idx after each leaf: pad insertion points
 }
 
 fn indent_len(line: &str) -> usize {
@@ -65,11 +80,10 @@ fn w(s: &str) -> usize {
 
 fn rows_look_tabular(rows: &[&str], row_indent: usize) -> bool {
     rows.iter().all(|li| {
-        indent_len(li) == row_indent
-            && {
-                let c = &li[row_indent.min(li.len())..];
-                !(c.starts_with("- ") || c == "-")
-            }
+        indent_len(li) == row_indent && {
+            let c = &li[row_indent.min(li.len())..];
+            !(c.starts_with("- ") || c == "-")
+        }
     })
 }
 
@@ -87,14 +101,39 @@ fn parse_tbl_header(line: &str, delim: char) -> Option<Tbl> {
     let lb = at('[', 0)?;
     let rb = at(']', lb)?;
     let inner = &line[lb + 1..rb];
-    let digits: String = inner.chars().take_while(|c| c.is_ascii_digit()).collect();
-    let len: usize = digits.parse().ok()?;
+    let len: usize = inner
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .ok()?;
     let keyed = inner.contains(':');
     let open = at('{', rb)?;
-    // matching close: depth walk over the brace tokens
+    let close = matching_close(&toks, open)?;
+    if line[close + 1..].trim() != ":" {
+        return None;
+    }
+    // flat split of the field area: group syntax stays inside segments, so
+    // each segment holds exactly one leaf plus surrounding syntax/pads.
+    let segs = split_cells(&line[open + 1..close], delim)
+        .into_iter()
+        .map(|(a, b)| (open + 1 + a, open + 1 + b))
+        .collect::<Vec<_>>();
+    if segs.len() < 2 {
+        return None; // single column: nothing to align
+    }
+    Some(Tbl {
+        len,
+        keyed,
+        open,
+        segs,
+    })
+}
+
+// Byte idx of the `}` closing the `{` at `open` (depth walk over tokens).
+fn matching_close(toks: &[(usize, char)], open: usize) -> Option<usize> {
     let mut depth = 0;
-    let mut close = None;
-    for (i, c) in &toks {
+    for (i, c) in toks {
         if *i < open {
             continue;
         }
@@ -103,57 +142,27 @@ fn parse_tbl_header(line: &str, delim: char) -> Option<Tbl> {
         } else if *c == '}' {
             depth -= 1;
             if depth == 0 {
-                close = Some(*i);
-                break;
+                return Some(*i);
             }
         }
     }
-    let close = close?;
-    if line[close + 1..].trim() != ":" {
-        return None;
-    }
-    // flat split of the field area: group syntax stays inside segments, so
-    // each segment holds exactly one leaf plus surrounding syntax/pads.
-    let mut segs = vec![];
-    let mut s = open + 1;
-    for (i, c) in &toks {
-        if *c == delim && *i > open && *i < close {
-            segs.push((s, *i));
-            s = *i + delim.len_utf8();
-        }
-    }
-    segs.push((s, close));
-    if segs.len() < 2 {
-        return None; // single column: nothing to align
-    }
-    Some(Tbl { len, keyed, open, segs })
+    None
 }
 
-// Strip pads and group closers off a segment's tail. Quoteless-safe: pads
-// are always outside quotes, and a quoted name ends in `"` so neither strip
-// can eat into it.
-fn strip_tail(mut s: &str) -> &str {
-    loop {
-        let t = s.trim_end_matches(' ');
-        let u = t.trim_end_matches('}');
-        if u.len() == s.len() {
-            return s;
-        }
-        s = u;
-    }
-}
-
-// Byte offset (relative to seg) where the leaf NAME starts: after the last
-// group opener (`at{`, `"my group"{`, arbitrarily nested), else after lead
-// pads. Quote-safe: only UNQUOTED openers count, so `"a{b"` starts at 0.
-fn name_start(seg: &str) -> usize {
-    let lead = seg.bytes().take_while(|b| *b == b' ').count();
-    tokens(seg)
+// Canonical (name-start, name-end) byte offsets of the leaf inside a raw
+// field segment: drops old pads and group closers, then skips lead pads and
+// group prefixes (`at{`, `"my group"{`). Quote-safe, so re-aligning output
+// is stable.
+fn leaf_span(seg: &str) -> (usize, usize) {
+    let s = seg.trim_end_matches(&[' ', '}'][..]);
+    let lead = s.bytes().take_while(|b| *b == b' ').count();
+    let start = tokens(s)
         .iter()
         .filter(|(_, c)| *c == '{')
         .last()
         .map(|(i, _)| i + 1)
-        .unwrap_or(lead)
+        .unwrap_or(lead);
+    (start, s.len())
 }
 
 fn align_one(
@@ -169,128 +178,113 @@ fn align_one(
     let mut ends = Vec::with_capacity(n);
     let mut name_w = Vec::with_capacity(n);
     for (a, b) in &tbl.segs {
-        let s = strip_tail(&header[*a..*b]);
-        let ns = name_start(s);
+        let (ns, ne) = leaf_span(&header[*a..*b]);
         starts.push(*a + ns);
-        ends.push(*a + s.len());
-        name_w.push(w(&s[ns..]));
+        ends.push(*a + ne);
+        name_w.push(w(&header[*a + ns..*a + ne]));
     }
     let mut grid: Vec<Vec<String>> = Vec::with_capacity(rows.len());
     let mut keys: Vec<String> = vec![];
+    let mut widths = vec![0usize; n];
     for line in rows {
         let content = &line[row_indent.min(line.len())..];
-        if tbl.keyed {
-            let colon = find_unquoted(content, ':', 0)?;
-            keys.push(content[..colon].trim_end().to_string());
-            let rest = content[colon + 1..].trim_start_matches(' ');
-            let cells = split_cells(rest, delim);
-            if cells.len() != n {
-                return None;
-            }
-            grid.push(cells.iter().map(|(a, b)| rest[*a..*b].to_string()).collect());
+        // keyed rows split off `key:` first; plain rows have no key
+        let (key, body) = if tbl.keyed {
+            let colon = tokens(content)
+                .into_iter()
+                .find(|(_, c)| *c == ':')
+                .map(|(i, _)| i)?;
+            (
+                Some(content[..colon].trim_end().to_string()),
+                content[colon + 1..].trim_start_matches(' '),
+            )
         } else {
-            let cells = split_cells(content, delim);
-            if cells.len() != n {
-                return None;
-            }
-            grid.push(cells.iter().map(|(a, b)| content[*a..*b].to_string()).collect());
+            (None, content)
+        };
+        if let Some(k) = key {
+            keys.push(k);
         }
-    }
-    let mut widths = vec![0usize; n];
-    for row in &grid {
-        for (j, cell) in row.iter().enumerate() {
-            widths[j] = widths[j].max(w(cell));
+        let cells = split_cells(body, delim);
+        if cells.len() != n {
+            return None;
         }
+        let mut row = Vec::with_capacity(n);
+        for (j, (a, b)) in cells.iter().enumerate() {
+            row.push(body[*a..*b].to_string());
+            widths[j] = widths[j].max(w(&row[j]));
+        }
+        grid.push(row);
     }
     let max_key = keys.iter().map(|k| w(k)).max().unwrap_or(0);
     let row_start = row_indent + if tbl.keyed { max_key + 2 } else { 0 };
-    let mut gutter = w(&header[..starts[0]]) as isize - row_start as isize;
-    let lead_add = (-gutter).max(0) as usize;
-    gutter += lead_add as isize;
+    let gutter = w(&header[..starts[0]]) as isize - row_start as isize;
     let row_width: usize = widths.iter().sum::<usize>() + n - 1;
+    let mut fit = Fit {
+        grid,
+        keys,
+        max_key,
+        widths,
+        pads: vec![0; n - 1],
+        lead: 0,
+        ends,
+    };
     // absurd gutter: align rows with each other, leave header alone
-    if gutter > row_width as isize {
-        return Some(build(header, &grid, Some(&keys), max_key, &widths, &[], 0, tbl, &ends, row_indent, delim, false));
-    }
-    let gutter = gutter as usize;
-    let mut pads = vec![0usize; n - 1];
-    for j in 0..n - 1 {
-        let gap = w(&header[ends[j]..starts[j + 1]]); // >= 1: always holds the delimiter
-        let owed = if j == 0 { gutter } else { 0 };
-        let needed = name_w[j] + gap - 1 + owed;
-        if widths[j] < needed {
-            widths[j] = needed;
+    if gutter <= row_width as isize {
+        fit.lead = (-gutter).max(0) as usize;
+        let first_owed = (gutter + fit.lead as isize) as usize;
+        for j in 0..n - 1 {
+            let gap = w(&header[fit.ends[j]..starts[j + 1]]); // >= 1: always holds the delimiter
+            let owed = if j == 0 { first_owed } else { 0 };
+            let needed = name_w[j] + gap - 1 + owed;
+            if fit.widths[j] < needed {
+                fit.widths[j] = needed;
+            }
+            fit.pads[j] = fit.widths[j] + 1 - gap - owed - name_w[j];
         }
-        pads[j] = widths[j] + 1 - gap - owed - name_w[j];
     }
-    Some(build(header, &grid, Some(&keys), max_key, &widths, &pads, lead_add, tbl, &ends, row_indent, delim, true))
+    Some(build(header, &tbl, row_indent, delim, &fit))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build(
-    header: &str,
-    grid: &[Vec<String>],
-    keys: Option<&[String]>,
-    max_key: usize,
-    widths: &[usize],
-    pads: &[usize],
-    lead_add: usize,
-    tbl: &Tbl,
-    ends: &[usize],
-    row_indent: usize,
-    delim: char,
-    pad_header: bool,
-) -> Vec<String> {
+fn build(header: &str, tbl: &Tbl, indent: usize, delim: char, fit: &Fit) -> Vec<String> {
     let mut out = vec![];
-    if pad_header && (lead_add > 0 || pads.iter().any(|p| *p > 0)) {
-        // insert back-to-front so byte indices stay valid
-        let mut ins: Vec<(usize, usize)> = vec![(tbl.open + 1, lead_add)];
-        for (k, e) in ends.iter().enumerate().take(pads.len()) {
-            if pads[k] > 0 {
-                ins.push((*e, pads[k]));
+    if fit.lead > 0 || fit.pads.iter().any(|p| *p > 0) {
+        // largest position first, so earlier byte indices stay valid
+        // (all insertions are spaces, so ties need no ordering)
+        let mut h = header.to_string();
+        for (k, e) in fit.ends.iter().enumerate().take(fit.pads.len()).rev() {
+            if fit.pads[k] > 0 {
+                h.insert_str(*e, &" ".repeat(fit.pads[k]));
             }
         }
-        ins.sort_by(|a, b| b.0.cmp(&a.0));
-        let mut h = header.to_string();
-        for (pos, count) in ins {
-            if count > 0 {
-                h.insert_str(pos, &" ".repeat(count));
-            }
+        if fit.lead > 0 {
+            h.insert_str(tbl.open + 1, &" ".repeat(fit.lead));
         }
         out.push(h);
     } else {
         out.push(header.to_string());
     }
-    let indent = " ".repeat(row_indent);
-    let ds = delim.to_string();
-    for (r, cells) in grid.iter().enumerate() {
+    let indent = " ".repeat(indent);
+    for (r, cells) in fit.grid.iter().enumerate() {
         let mut line = String::new();
         line.push_str(&indent);
         if tbl.keyed {
-            let key = &keys.unwrap()[r];
+            let key = &fit.keys[r];
             line.push_str(key);
             line.push_str(": ");
-            line.push_str(&" ".repeat(max_key - w(key)));
+            line.push_str(&" ".repeat(fit.max_key - w(key)));
         }
         for (j, cell) in cells.iter().enumerate() {
             if j > 0 {
-                line.push_str(&ds);
+                line.push(delim);
             }
             line.push_str(cell);
             if j + 1 < cells.len() {
-                line.push_str(&" ".repeat(widths[j] - w(cell)));
+                line.push_str(&" ".repeat(fit.widths[j] - w(cell)));
             }
         }
         out.push(line);
     }
     out
-}
-
-fn find_unquoted(s: &str, target: char, from: usize) -> Option<usize> {
-    tokens(s)
-        .into_iter()
-        .find(|(i, c)| *c == target && *i >= from)
-        .map(|(i, _)| i)
 }
 
 // The one quote-tracking scanner everything else builds on: every
@@ -334,17 +328,16 @@ fn split_cells(s: &str, delim: char) -> Vec<(usize, usize)> {
 mod pretty_tests {
     #[test]
     fn leaf_spans() {
-        use super::{name_start, strip_tail};
-        assert_eq!(name_start("customer{name"), 9);
-        assert_eq!(name_start("at{x"), 3);
-        assert_eq!(name_start("user"), 0);
-        assert_eq!(name_start(" user"), 1);
-        assert_eq!(name_start("\"x,y\""), 0);
-        assert_eq!(name_start("\"a{b\""), 0);
-        assert_eq!(name_start("\"g\"{x"), 4);
-        assert_eq!(strip_tail("country                   }"), "country");
-        assert_eq!(strip_tail("name                    "), "name");
-        assert_eq!(strip_tail("\"a}\"   "), "\"a}\"");
+        use super::leaf_span;
+        assert_eq!(leaf_span("customer{name"), (9, 13));
+        assert_eq!(leaf_span("at{x"), (3, 4));
+        assert_eq!(leaf_span("user"), (0, 4));
+        assert_eq!(leaf_span(" user"), (1, 5));
+        assert_eq!(leaf_span("\"x,y\""), (0, 5));
+        assert_eq!(leaf_span("\"a{b\""), (0, 5));
+        assert_eq!(leaf_span("\"g\"{x"), (4, 5));
+        assert_eq!(leaf_span("country                   }"), (0, 7));
+        assert_eq!(leaf_span("\"a}\"   "), (0, 4));
     }
 
     use super::align_toon;
@@ -354,71 +347,44 @@ mod pretty_tests {
         decode::<serde_json::Value>(s, &DecodeOptions::default()).unwrap()
     }
 
-    fn assert_fixpoint(s: &str) {
-        assert_eq!(align_toon(s, ',', 2), s);
-        assert!(s.lines().all(|l| !l.ends_with(' ')));
+    fn check(un: &str, al: &str, indent: usize, case: usize) {
+        assert_eq!(align_toon(un, ',', indent), al, "transform case {case}");
+        assert_eq!(align_toon(al, ',', indent), al, "fixpoint case {case}");
+        assert!(
+            al.lines().all(|l| !l.ends_with(' ')),
+            "no trailing pads case {case}"
+        );
     }
 
-    #[test]
-    fn simple_table_aligns_fixpoint_roundtrip() {
-        const UN: &str = "[2]{col1,col2,col3}:\n  moe,larry,curly\n  larry,curly,moe";
-        const AL: &str = "[2]{col1,col2 ,col3}:\n  moe   ,larry,curly\n  larry ,curly,moe";
-        assert_eq!(align_toon(UN, ',', 2), AL);
-        assert_fixpoint(AL);
-        assert_eq!(dec(UN), dec(AL));
-    }
+    // (unaligned, `serde to toon --pretty` output, indent): byte-parity vectors.
+    const CASES: &[(&str, &str, usize)] = &[
+        ("[2]{col1,col2,col3}:\n  moe,larry,curly\n  larry,curly,moe",
+         "[2]{col1,col2 ,col3}:\n  moe   ,larry,curly\n  larry ,curly,moe", 2),
+        ("  deps[3]{name,version,license}:\n    react,18.3.1,MIT\n    typescript,5.4.5,Apache-2.0\n    vite,5.2.11,MIT",
+         "  deps[3]{name,version,license}:\n    react     ,18.3.1 ,MIT\n    typescript,5.4.5  ,Apache-2.0\n    vite      ,5.2.11 ,MIT", 2),
+        ("  compact[2]{i,at{x,y},ok}:\n    1,3,4,true\n    2,7,9,false",
+         "  compact[2]{i,at{x,y},ok}:\n    1            ,3,4 ,true\n    2            ,7,9 ,false", 2),
+        ("  wide[2]{id,customer{name,country},total}:\n    1,Ada,DK,99\n    2,name_column_is_this_wide,country_column_is_this_wide,149",
+         "  wide[2]{id,customer{name                    ,country                   },total}:\n    1                ,Ada                     ,DK                         ,99\n    2                ,name_column_is_this_wide,country_column_is_this_wide,149", 2),
+        ("  hosts[3:]{user,port,forward}:\n    laptop: ada,22,true\n    builder: root,2222,false\n    nas: admin,22,false",
+         "  hosts[3:]{ user ,port,forward}:\n    laptop:  ada  ,22  ,true\n    builder: root ,2222,false\n    nas:     admin,22  ,false", 2),
+        ("[2]{col1,col2,col3}:\nmoe,larry,curly\nlarry,curly,moe",
+         "[2]{col1,col2 ,col3}:\nmoe     ,larry,curly\nlarry   ,curly,moe", 0),
+        ("t[2]{a,b}:\n  \"x,y\",2\n  z,3",
+         "t[2]{a ,b}:\n  \"x,y\",2\n  z    ,3", 2),
+        ("s[2]{only}:\n  a\n  b",
+         "s[2]{only}:\n  a\n  b", 2),
+    ];
 
     #[test]
-    fn flat_deps_match_serde() {
-        const UN: &str = "  deps[3]{name,version,license}:\n    react,18.3.1,MIT\n    typescript,5.4.5,Apache-2.0\n    vite,5.2.11,MIT";
-        const AL: &str = "  deps[3]{name,version,license}:\n    react     ,18.3.1 ,MIT\n    typescript,5.4.5  ,Apache-2.0\n    vite      ,5.2.11 ,MIT";
-        assert_eq!(align_toon(UN, ',', 2), AL);
-        assert_fixpoint(AL);
-        // decode roundtrip on the top-level form (0.5.0 rejects the indented fragment alone)
+    fn matches_serde_pretty() {
+        for (n, (un, al, indent)) in CASES.iter().enumerate() {
+            check(un, al, *indent, n);
+        }
+        // value roundtrips where the 0.5.0 decoder can read them
+        assert_eq!(dec(CASES[0].0), dec(CASES[0].1));
+        assert_eq!(dec(CASES[6].0), dec(CASES[6].1));
         const TOP_UN: &str = "deps[3]{name,version,license}:\n  react,18.3.1,MIT\n  typescript,5.4.5,Apache-2.0\n  vite,5.2.11,MIT";
         assert_eq!(dec(TOP_UN), dec(&align_toon(TOP_UN, ',', 2)));
-    }
-
-    #[test]
-    fn nested_compact_matches_serde() {
-        const UN: &str = "  compact[2]{i,at{x,y},ok}:\n    1,3,4,true\n    2,7,9,false";
-        const AL: &str = "  compact[2]{i,at{x,y},ok}:\n    1            ,3,4 ,true\n    2            ,7,9 ,false";
-        assert_eq!(align_toon(UN, ',', 2), AL);
-        assert_fixpoint(AL);
-    }
-
-    #[test]
-    fn nested_wide_matches_serde() {
-        const UN: &str = "  wide[2]{id,customer{name,country},total}:\n    1,Ada,DK,99\n    2,name_column_is_this_wide,country_column_is_this_wide,149";
-        const AL: &str = "  wide[2]{id,customer{name                    ,country                   },total}:\n    1                ,Ada                     ,DK                         ,99\n    2                ,name_column_is_this_wide,country_column_is_this_wide,149";
-        assert_eq!(align_toon(UN, ',', 2), AL);
-        assert_fixpoint(AL);
-    }
-
-    #[test]
-    fn keyed_hosts_match_serde() {
-        const UN: &str = "  hosts[3:]{user,port,forward}:\n    laptop: ada,22,true\n    builder: root,2222,false\n    nas: admin,22,false";
-        const AL: &str = "  hosts[3:]{ user ,port,forward}:\n    laptop:  ada  ,22  ,true\n    builder: root ,2222,false\n    nas:     admin,22  ,false";
-        assert_eq!(align_toon(UN, ',', 2), AL);
-        assert_fixpoint(AL);
-    }
-
-    #[test]
-    fn zero_indent_still_aligns() {
-        const UN: &str = "[2]{col1,col2,col3}:\nmoe,larry,curly\nlarry,curly,moe";
-        const AL: &str = "[2]{col1,col2 ,col3}:\nmoe     ,larry,curly\nlarry   ,curly,moe";
-        assert_eq!(align_toon(UN, ',', 0), AL);
-        assert_eq!(align_toon(AL, ',', 0), AL);
-    }
-
-    #[test]
-    fn quotes_and_single_column_untouched() {
-        const S: &str = "t[2]{a,b}:\n  \"x,y\",2\n  z,3\ns[2]{only}:\n  a\n  b";
-        let al = align_toon(S, ',', 2);
-        assert_eq!(align_toon(&al, ',', 2), al);
-        assert_eq!(
-            dec("t[2]{a,b}:\n  \"x,y\",2\n  z,3"),
-            dec("t[2]{a,b}:\n  \"x,y\" ,2\n  z    ,3")
-        );
     }
 }
