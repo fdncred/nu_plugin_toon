@@ -19,9 +19,6 @@
 //   double-counted).
 
 pub fn align_toon(toon: &str, delimiter: char, indent_spaces: usize) -> String {
-    if indent_spaces == 0 {
-        return toon.to_string();
-    }
     let has_trailing_nl = toon.ends_with('\n');
     // split, dropping the final empty piece from trailing newline; re-added at end
     let mut lines: Vec<&str> = toon.split('\n').collect();
@@ -857,5 +854,26 @@ mod pretty_tests {
   contrast: nuon keeps all five of those types and toon cannot"#;
         assert_aligned(S);
         assert!(dec(S)["toon_limitations_where_it_loses_to_other_formats"].is_object());
+    }
+
+    #[test]
+    fn zero_indent_still_aligns() {
+        use toon_format::Indent;
+        // Indent::Spaces(0) emits rows at the same indent as the header (0).
+        // --pretty must not silently no-op here. Gutter is larger (header
+        // prefix `[2]{` vs row indent 0), so first column is wider than
+        // the indent-2 case, but delimiters still line up at column 8.
+        const UNALIGNED: &str = "[2]{col1,col2,col3}:\nmoe,larry,curly\nlarry,curly,moe";
+        const ALIGNED: &str = "[2]{col1,col2 ,col3}:\nmoe     ,larry,curly\nlarry   ,curly,moe";
+        assert_eq!(super::align_toon(UNALIGNED, ',', 0), ALIGNED);
+        // fixpoint + no trailing spaces
+        assert_eq!(super::align_toon(ALIGNED, ',', 0), ALIGNED);
+        for line in ALIGNED.lines() {
+            assert!(!line.ends_with(' '), "trailing space on {line:?}");
+        }
+        // display-only: same value before and after (decode with matching indent)
+        let opts = DecodeOptions::default().with_indent(Indent::Spaces(0));
+        let dec0 = |s: &str| decode::<serde_json::Value>(s, &opts).unwrap();
+        assert_eq!(dec0(UNALIGNED), dec0(ALIGNED));
     }
 }

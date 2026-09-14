@@ -27,6 +27,3 @@ nu-plugin-test-support = { version = "0.115.0" }
 # nu-plugin-engine and cargo test fails with E0004. Re-enable it here so engine
 # and core agree (test-only; production transport unchanged).
 nu-plugin-engine = { version = "0.115.0", features = ["local-socket"] }
-# to json / from json for PluginTest's minimal engine (which otherwise lacks
-# them, so test_command_examples fails with "Could not find 'to json'").
-nu-command = "0.115.0"

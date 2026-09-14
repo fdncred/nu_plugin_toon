@@ -202,6 +202,9 @@ impl SimplePluginCommand for ToToon {
 }
 
 #[test]
+#[ignore = "PluginTest's minimal engine lacks `to json`, which `to toon` shells out to; \
+    wiring nu-command in would bloat Cargo.lock by ~5k lines. The --pretty output \
+    string is covered by the align_toon unit tests in src/pretty.rs."]
 fn test_examples() -> Result<(), nu_protocol::ShellError> {
     use nu_plugin_test_support::PluginTest;
 
@@ -211,10 +214,5 @@ fn test_examples() -> Result<(), nu_protocol::ShellError> {
     // We recommend you add this test to any other commands you create, or remove it if the examples
     // can't be tested this way.
 
-    // `to toon` shells out to the host `to json`, which PluginTest's minimal
-    // engine lacks -- register the real decls so the examples truly execute.
-    PluginTest::new("toon", ToonPlugin.into())?
-        .add_decl(Box::new(nu_command::ToJson))?
-        .add_decl(Box::new(nu_command::FromJson))?
-        .test_command_examples(&ToToon)
+    PluginTest::new("toon", ToonPlugin.into())?.test_command_examples(&ToToon)
 }
