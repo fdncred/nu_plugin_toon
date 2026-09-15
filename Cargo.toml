@@ -21,3 +21,6 @@ toon-format = { version = "0.5.0", default-features = false }
 [dev-dependencies]
 # nu-plugin-test-support = { path = "../nushell/crates/nu-plugin-test-support" }
 nu-plugin-test-support = { version = "0.115.0" }
+# test-support drops nu-plugin-engine's `local-socket` feature, breaking cargo
+# test with E0004; re-enable it here (test-only, production unchanged).
+nu-plugin-engine = { version = "0.115.0", features = ["local-socket"] }

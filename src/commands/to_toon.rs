@@ -39,6 +39,7 @@ impl SimplePluginCommand for ToToon {
                 Some('f'),
             )
             .switch("raw", "Don't call internal `to json` command and just pass json as the input", Some('r'))
+            .switch("pretty", "Format output with aligned table columns", Some('p'))
             .category(Category::Experimental)
     }
 
@@ -61,7 +62,15 @@ impl SimplePluginCommand for ToToon {
                 description: "Convert table literal to toon format",
                 example: "[[col1 col2 col3]; [moe larry curly] [larry curly moe]] | to toon",
                 result: Some(Value::test_string(
-                    "[2]{col1,col2,col3}:\n  moe,larry,curly\n  larry,curly,moe\n",
+                    "[2]{col1,col2,col3}:\n  moe,larry,curly\n  larry,curly,moe",
+                )),
+            },
+            Example {
+                description: "Convert table literal to toon format with aligned columns",
+                example:
+                    "[[col1 col2 col3]; [moe larry curly] [larry curly moe]] | to toon --pretty",
+                result: Some(Value::test_string(
+                    "[2]{col1,col2 ,col3}:\n  moe   ,larry,curly\n  larry ,curly,moe",
                 )),
             },
         ]
@@ -95,6 +104,7 @@ impl SimplePluginCommand for ToToon {
             Delimiter::Comma
         };
         let raw = call.has_flag("raw")?;
+        let pretty = call.has_flag("pretty")?;
         let space_count = call.get_flag::<i64>("indent-spaces")?.unwrap_or(2) as usize;
         let folding_mode = if let Some(folding) = call.get_flag::<String>("key-folding-mode")? {
             match folding.to_ascii_lowercase().as_str() {
@@ -172,11 +182,24 @@ impl SimplePluginCommand for ToToon {
             )
         })?;
 
-        Ok(Value::string(toon, call.head))
+        Ok(Value::string(
+            if pretty {
+                let sep = match delimiter {
+                    Delimiter::Comma => ',',
+                    Delimiter::Pipe => '|',
+                    Delimiter::Tab => '\t',
+                };
+                crate::pretty::align_toon(&toon, sep, space_count)
+            } else {
+                toon
+            },
+            call.head,
+        ))
     }
 }
 
 #[test]
+#[ignore = "PluginTest lacks `to json` (needs nu-command); pretty output covered by align_toon tests."]
 fn test_examples() -> Result<(), nu_protocol::ShellError> {
     use nu_plugin_test_support::PluginTest;
 

@@ -27,6 +27,7 @@ Flags:
   -k, --key-folding-mode <string>: Keyfolding mode, 'off' or 'safe'. When set to 'Safe', single-key object chains will be folded into dotted-path notation if all safety requirements are met
   -f, --folding-depth <int>: Set maximum depth for key folding
   -r, --raw: Don't call internal to json command and just pass json as the input
+  -p, --pretty: Format output with aligned table columns
 
 Examples:
   Convert ls output to toon format
@@ -37,6 +38,12 @@ Examples:
   [2]{col1,col2,col3}:
     moe,larry,curly
     larry,curly,moe
+
+  Convert table literal to toon format with aligned columns
+  > [[col1 col2 col3]; [moe larry curly] [larry curly moe]] | to toon --pretty
+  [2]{col1,col2 ,col3}:
+    moe   ,larry,curly
+    larry ,curly,moe
 ```    
 
 ### from toon

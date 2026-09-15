@@ -1495,6 +1495,7 @@ name = "nu_plugin_toon"
 version = "0.1.0"
 dependencies = [
  "nu-plugin",
+ "nu-plugin-engine",
  "nu-plugin-test-support",
  "nu-protocol",
  "serde_json",
